@@ -24,6 +24,7 @@ export default function ScheduleDetailPage() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<"claim" | "revoke" | null>(null);
   const [err, setErr] = useState("");
+  const [lastTxHash, setLastTxHash] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -38,16 +39,24 @@ export default function ScheduleDetailPage() {
 
   const handleClaim = async () => {
     if (!publicKey || !schedule) return;
-    setActionLoading("claim"); setErr("");
-    try { await claimVested(publicKey, schedule.id); await load(); }
+    setActionLoading("claim"); setErr(""); setLastTxHash(null);
+    try {
+      const hash = await claimVested(publicKey, schedule.id);
+      setLastTxHash(hash);
+      await load();
+    }
     catch (e: any) { setErr(parseContractError(e)); }
     finally { setActionLoading(null); }
   };
 
   const handleRevoke = async () => {
     if (!publicKey || !schedule) return;
-    setActionLoading("revoke"); setErr("");
-    try { await revokeSchedule(publicKey, schedule.id); await load(); }
+    setActionLoading("revoke"); setErr(""); setLastTxHash(null);
+    try {
+      const hash = await revokeSchedule(publicKey, schedule.id);
+      setLastTxHash(hash);
+      await load();
+    }
     catch (e: any) { setErr(parseContractError(e)); }
     finally { setActionLoading(null); }
   };
@@ -184,6 +193,20 @@ export default function ScheduleDetailPage() {
             <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
               {err}
             </p>
+          )}
+
+          {lastTxHash && (
+            <div className="text-sm bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2 flex flex-col gap-1">
+              <span className="text-green-400 font-medium">Transaction confirmed</span>
+              <a
+                href={`https://stellar.expert/explorer/${NETWORK}/tx/${lastTxHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-xs text-violet-400 hover:underline break-all"
+              >
+                {lastTxHash}
+              </a>
+            </div>
           )}
 
           {publicKey && !schedule.revoked && (

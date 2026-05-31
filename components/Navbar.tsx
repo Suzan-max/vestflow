@@ -57,6 +57,7 @@ export default function Navbar() {
         <Link href="/analytics" className="hover:text-white transition-colors">Analytics</Link>
         <Link href="/widget" className="hover:text-white transition-colors">Widget</Link>
         <Link href="/learn" className="hover:text-white transition-colors">Learn</Link>
+        <Link href="/faq" className="hover:text-white transition-colors">FAQ</Link>
         <a href="https://github.com/libby-coder/vestflow" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">GitHub</a>
       </div>
 
@@ -106,6 +107,7 @@ export default function Navbar() {
           <Link href="/analytics" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Analytics</Link>
           <Link href="/widget" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Widget</Link>
           <Link href="/learn" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Learn</Link>
+          <Link href="/faq" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">FAQ</Link>
           <a href="https://github.com/libby-coder/vestflow" onClick={() => setMenuOpen(false)} target="_blank" rel="noopener noreferrer" className="text-sm text-zinc-400 hover:text-white transition-colors py-2">GitHub</a>
         </div>
       )}

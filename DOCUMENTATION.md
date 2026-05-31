@@ -7,8 +7,9 @@
 3. [Frontend Integration](#frontend-integration)
 4. [Development Guide](#development-guide)
 5. [Deployment](#deployment)
-6. [Security Considerations](#security-considerations)
-7. [Troubleshooting](#troubleshooting)
+6. [Team / DAO Vesting — Multisig Beneficiaries](#team--dao-vesting--multisig-beneficiaries)
+7. [Security Considerations](#security-considerations)
+8. [Troubleshooting](#troubleshooting)
 
 ## Overview
 
@@ -322,6 +323,80 @@ NEXT_PUBLIC_CONTRACT_ID=<contract-address>
 NEXT_PUBLIC_NETWORK=testnet
 NEXT_PUBLIC_RPC_URL=https://soroban-testnet.stellar.org
 ```
+
+## Team / DAO Vesting — Multisig Beneficiaries
+
+VestFlow supports any valid Stellar account address as the beneficiary, including multisig
+accounts and DAO treasury accounts.
+
+### How it works
+
+Stellar's native multisig model means that `beneficiary.require_auth()` inside the contract
+is satisfied as long as the `claim` transaction carries the required threshold of signatures
+for that account. No contract changes are needed.
+
+### Setting up a multisig beneficiary
+
+1. **Configure the Stellar account** — set the signing threshold and add co-signers using
+   Stellar Laboratory or the Stellar CLI:
+
+   ```bash
+   stellar account set-options \
+     --source <treasury-account> \
+     --network testnet \
+     --med-threshold 2 \
+     --signer <signer-b-pubkey>:1 \
+     --signer <signer-c-pubkey>:1
+   ```
+
+2. **Create the schedule** — pass the multisig account address as `beneficiary` in
+   `create_schedule`. The grantor flow is identical to a single-key beneficiary.
+
+3. **Claim vested tokens** — all required signers must co-sign the `claim` transaction.
+   Because Freighter currently supports single-key signing, use the Stellar CLI or a
+   multisig-capable wallet (Lobstr, StellarTerm) to collect signatures:
+
+   ```bash
+   # Build the unsigned transaction
+   stellar contract invoke \
+     --id <CONTRACT_ID> \
+     --network testnet \
+     --source <one-signer> \
+     --build-only \
+     -- claim --schedule_id <ID> > claim.xdr
+
+   # Each additional signer adds their signature
+   stellar tx sign claim.xdr --source <another-signer> --network testnet
+
+   # Submit the fully-signed transaction
+   stellar tx submit claim.xdr --network testnet
+   ```
+
+### DAO contract as beneficiary
+
+A Soroban contract address (e.g. a DAO governance contract) can also be the beneficiary if
+the contract implements the Soroban auth interface (`require_auth` / `__check_auth`). Verify
+the DAO contract supports this before creating the schedule.
+
+### Tested flows
+
+| Scenario | Behaviour |
+|---|---|
+| Multisig account, threshold met | `claim` succeeds; tokens transferred to multisig account |
+| Multisig account, threshold not met | Transaction rejected by Stellar protocol before reaching contract |
+| DAO contract with `__check_auth` | `claim` succeeds if the DAO contract approves the invocation |
+| DAO contract without auth support | Transaction fails with auth error |
+
+### Security notes
+
+- The grantor cannot distinguish a multisig address from a regular address — the on-chain
+  enforcement is identical.
+- For irrevocable schedules with a multisig beneficiary, ensure the multisig account is
+  properly configured before creating the schedule. If signers are lost and the threshold
+  cannot be met, the tokens will be permanently locked.
+- Consider using a time-locked or social-recovery multisig for long-duration schedules.
+
+---
 
 ## Security Considerations
 

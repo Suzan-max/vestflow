@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { createSchedule, CONTRACT_ID, parseContractError } from "@/lib/stellar";
+import { createSchedule, CONTRACT_ID, parseContractError, NETWORK } from "@/lib/stellar";
 import { useWallet } from "@/lib/WalletContext";
 
 export default function CreateForm() {
@@ -56,7 +56,7 @@ export default function CreateForm() {
       <div className="text-4xl">✓</div>
       <p className="text-green-400 font-semibold">Schedule Created!</p>
       <p className="text-zinc-400 text-sm">Tokens are now locked and vesting has started.</p>
-      <a href={`https://stellar.expert/explorer/testnet/tx/${txHash}`} target="_blank" rel="noopener noreferrer"
+      <a href={`https://stellar.expert/explorer/${NETWORK}/tx/${txHash}`} target="_blank" rel="noopener noreferrer"
         className="text-xs font-mono text-violet-400 hover:underline break-all">{txHash}</a>
       <button onClick={() => { setStatus("idle"); setStep("form"); setTxHash(""); }} className="mt-2 text-violet-400 text-sm hover:underline">Create another</button>
     </div>

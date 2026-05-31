@@ -243,7 +243,7 @@ export default function PublicSchedulePage() {
             <h3 className="font-semibold mb-2">Grantor (Issuer)</h3>
             <p className="font-mono text-sm break-all text-zinc-300">{schedule.grantor}</p>
             <a
-              href={`https://${NETWORK === "mainnet" ? "stellar.expert" : "testnet.steexp.com"}/account/${schedule.grantor}`}
+              href={`https://stellar.expert/explorer/${NETWORK}/account/${schedule.grantor}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-violet-400 hover:text-violet-300 transition-colors text-sm mt-2 inline-block"
@@ -256,7 +256,7 @@ export default function PublicSchedulePage() {
             <h3 className="font-semibold mb-2">Beneficiary (Recipient)</h3>
             <p className="font-mono text-sm break-all text-zinc-300">{schedule.beneficiary}</p>
             <a
-              href={`https://${NETWORK === "mainnet" ? "stellar.expert" : "testnet.steexp.com"}/account/${schedule.beneficiary}`}
+              href={`https://stellar.expert/explorer/${NETWORK}/account/${schedule.beneficiary}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-violet-400 hover:text-violet-300 transition-colors text-sm mt-2 inline-block"

@@ -102,6 +102,12 @@ pub struct VestingSchedule {
 
 impl VestingSchedule {
     /// Calculate how many tokens are vested at a given timestamp.
+    ///
+    /// All intermediate multiplications are performed with overflow-checked
+    /// arithmetic (`checked_mul` / `checked_div`).  If an overflow is somehow
+    /// reached (e.g. `total_amount` is near `i128::MAX` and `elapsed` is also
+    /// very large) the function saturates to `total_amount` rather than
+    /// panicking or wrapping, which is always the safe upper bound.
     pub fn vested_at(&self, now: u64) -> i128 {
         if self.revoked {
             return self.claimed;
@@ -122,7 +128,13 @@ impl VestingSchedule {
                 if elapsed >= self.duration {
                     self.total_amount
                 } else {
-                    (self.total_amount * elapsed as i128) / self.duration as i128
+                    // Guard: total_amount * elapsed may overflow i128 for
+                    // near-maximal inputs.  Saturate to total_amount on
+                    // overflow — the caller can never receive more than that.
+                    self.total_amount
+                        .checked_mul(elapsed as i128)
+                        .and_then(|n| n.checked_div(self.duration as i128))
+                        .unwrap_or(self.total_amount)
                 }
             }
             VestingKind::LinearWithCliff => {
@@ -135,9 +147,14 @@ impl VestingSchedule {
                     return self.total_amount;
                 }
                 // Between cliff and end: linear from cliff_duration to duration.
-                let linear_duration = self.duration - self.cliff_duration;
-                let linear_elapsed = elapsed - self.cliff_duration;
-                (self.total_amount * linear_elapsed as i128) / linear_duration as i128
+                // Both subtractions are safe because of the bounds checked above.
+                let linear_duration = (self.duration - self.cliff_duration) as i128;
+                let linear_elapsed = (elapsed - self.cliff_duration) as i128;
+                // Guard: same overflow risk as the Linear branch.
+                self.total_amount
+                    .checked_mul(linear_elapsed)
+                    .and_then(|n| n.checked_div(linear_duration))
+                    .unwrap_or(self.total_amount)
             }
         }
     }
@@ -698,5 +715,131 @@ mod test {
         let ids = soroban_sdk::vec![&env, 999_u64];
         let bulk = client.claimable_bulk(&ids);
         assert_eq!(bulk.get(0).unwrap(), 0);
+    }
+
+    // --- Issue #108: overflow / edge-case arithmetic tests ---
+
+    /// `vested_at` must never exceed `total_amount`, even when elapsed > duration.
+    #[test]
+    fn test_linear_vested_at_caps_at_total_amount() {
+        let env = Env::default();
+        let schedule = VestingSchedule {
+            id: 1,
+            grantor: Address::generate(&env),
+            beneficiary: Address::generate(&env),
+            token: Address::generate(&env),
+            total_amount: 1_000_000,
+            claimed: 0,
+            start_time: 0,
+            duration: 1_000,
+            cliff_duration: 0,
+            kind: VestingKind::Linear,
+            revocable: false,
+            revoked: false,
+        };
+        // elapsed >> duration — must return exactly total_amount, not overflow
+        assert_eq!(schedule.vested_at(u64::MAX), 1_000_000);
+    }
+
+    /// Near-maximal `total_amount` with a large elapsed value must not panic or
+    /// wrap; the result must be clamped to `total_amount`.
+    #[test]
+    fn test_linear_near_max_i128_no_overflow() {
+        let env = Env::default();
+        // Use i128::MAX / 2 so the multiplication would overflow without the guard.
+        let big_amount = i128::MAX / 2;
+        let schedule = VestingSchedule {
+            id: 1,
+            grantor: Address::generate(&env),
+            beneficiary: Address::generate(&env),
+            token: Address::generate(&env),
+            total_amount: big_amount,
+            claimed: 0,
+            start_time: 0,
+            duration: u64::MAX,
+            cliff_duration: 0,
+            kind: VestingKind::Linear,
+            revocable: false,
+            revoked: false,
+        };
+        // elapsed = duration / 2 → would overflow without checked_mul
+        let half_elapsed = u64::MAX / 2;
+        let vested = schedule.vested_at(half_elapsed);
+        // Must be ≤ total_amount and ≥ 0
+        assert!(vested >= 0 && vested <= big_amount);
+    }
+
+    /// LinearWithCliff: near-maximal inputs must not overflow.
+    #[test]
+    fn test_linear_with_cliff_near_max_no_overflow() {
+        let env = Env::default();
+        let big_amount = i128::MAX / 2;
+        let duration = u64::MAX;
+        let cliff = duration / 4;
+        let schedule = VestingSchedule {
+            id: 1,
+            grantor: Address::generate(&env),
+            beneficiary: Address::generate(&env),
+            token: Address::generate(&env),
+            total_amount: big_amount,
+            claimed: 0,
+            start_time: 0,
+            duration,
+            cliff_duration: cliff,
+            kind: VestingKind::LinearWithCliff,
+            revocable: false,
+            revoked: false,
+        };
+        // Midpoint between cliff and end
+        let mid = cliff + (duration - cliff) / 2;
+        let vested = schedule.vested_at(mid);
+        assert!(vested >= 0 && vested <= big_amount);
+    }
+
+    /// `claimable_at` must never return a negative value.
+    #[test]
+    fn test_claimable_at_never_negative() {
+        let env = Env::default();
+        let schedule = VestingSchedule {
+            id: 1,
+            grantor: Address::generate(&env),
+            beneficiary: Address::generate(&env),
+            token: Address::generate(&env),
+            total_amount: 500,
+            claimed: 500, // already fully claimed
+            start_time: 0,
+            duration: 1_000,
+            cliff_duration: 0,
+            kind: VestingKind::Linear,
+            revocable: false,
+            revoked: false,
+        };
+        assert_eq!(schedule.claimable_at(u64::MAX), 0);
+    }
+
+    /// Zero-duration is rejected by `create_schedule`, but `vested_at` on a
+    /// schedule with duration=1 (minimum) must not divide by zero.
+    #[test]
+    fn test_linear_minimum_duration_no_div_by_zero() {
+        let env = Env::default();
+        let schedule = VestingSchedule {
+            id: 1,
+            grantor: Address::generate(&env),
+            beneficiary: Address::generate(&env),
+            token: Address::generate(&env),
+            total_amount: 1_000,
+            claimed: 0,
+            start_time: 0,
+            duration: 1,
+            cliff_duration: 0,
+            kind: VestingKind::Linear,
+            revocable: false,
+            revoked: false,
+        };
+        // Before end: 0 elapsed → 0 vested
+        assert_eq!(schedule.vested_at(0), 0);
+        // At or after end: fully vested
+        assert_eq!(schedule.vested_at(1), 1_000);
+        assert_eq!(schedule.vested_at(u64::MAX), 1_000);
     }
 }
