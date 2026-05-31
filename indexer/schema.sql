@@ -34,3 +34,31 @@ CREATE TABLE IF NOT EXISTS checkpoint (
 );
 
 INSERT OR IGNORE INTO checkpoint (id, last_ledger) VALUES (1, 0);
+
+-- Analytics Cache — Updated periodically with aggregate stats
+CREATE TABLE IF NOT EXISTS analytics_cache (
+  id                      INTEGER PRIMARY KEY CHECK (id = 1),
+  total_value_locked      TEXT NOT NULL DEFAULT '0',    -- bigint as string
+  total_claimed           TEXT NOT NULL DEFAULT '0',    -- bigint as string
+  active_schedules        INTEGER NOT NULL DEFAULT 0,
+  unique_beneficiaries    INTEGER NOT NULL DEFAULT 0,
+  total_schedules_created INTEGER NOT NULL DEFAULT 0,
+  total_revoked           INTEGER NOT NULL DEFAULT 0,
+  last_updated            INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+INSERT OR IGNORE INTO analytics_cache (id) VALUES (1);
+
+-- Daily snapshot for trend tracking
+CREATE TABLE IF NOT EXISTS daily_stats (
+  date                    TEXT NOT NULL PRIMARY KEY,  -- YYYY-MM-DD
+  total_value_locked      TEXT NOT NULL,
+  total_claimed           TEXT NOT NULL,
+  active_schedules        INTEGER NOT NULL,
+  unique_beneficiaries    INTEGER NOT NULL,
+  total_schedules_created INTEGER NOT NULL,
+  total_revoked           INTEGER NOT NULL,
+  created_at              INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats (date);

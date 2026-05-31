@@ -126,3 +126,141 @@ export function queryEvents(params: EventQueryParams): IndexedEvent[] {
     )
     .all(...values, limit, offset) as IndexedEvent[];
 }
+
+// ── Analytics ──────────────────────────────────────────────────────────
+
+export interface AnalyticsStats {
+  total_value_locked: string;
+  total_claimed: string;
+  active_schedules: number;
+  unique_beneficiaries: number;
+  total_schedules_created: number;
+  total_revoked: number;
+  last_updated: number;
+}
+
+export interface DailySnapshot {
+  date: string;
+  total_value_locked: string;
+  total_claimed: string;
+  active_schedules: number;
+  unique_beneficiaries: number;
+  total_schedules_created: number;
+  total_revoked: number;
+}
+
+/**
+ * Get current analytics stats from cache
+ */
+export function getAnalyticsStats(): AnalyticsStats {
+  const row = getDb()
+    .prepare("SELECT * FROM analytics_cache WHERE id = 1")
+    .get() as AnalyticsStats | undefined;
+  
+  return row || {
+    total_value_locked: "0",
+    total_claimed: "0",
+    active_schedules: 0,
+    unique_beneficiaries: 0,
+    total_schedules_created: 0,
+    total_revoked: 0,
+    last_updated: 0,
+  };
+}
+
+/**
+ * Calculate and cache current analytics stats
+ */
+export function computeAnalyticsStats(): AnalyticsStats {
+  const db = getDb();
+  
+  // Count unique schedule IDs from created events to get total schedules
+  const totalCreated = db
+    .prepare("SELECT COUNT(DISTINCT schedule_id) as count FROM schedule_events WHERE event_type = 'schedule_created'")
+    .get() as { count: number } | undefined;
+  
+  // Count revoked schedules
+  const totalRevoked = db
+    .prepare("SELECT COUNT(DISTINCT schedule_id) as count FROM schedule_events WHERE event_type = 'revoked'")
+    .get() as { count: number } | undefined;
+
+  // Total claimed across all events
+  const totalClaimed = db
+    .prepare("SELECT COALESCE(SUM(CAST(amount AS INTEGER)), 0) as total FROM schedule_events WHERE event_type = 'claimed'")
+    .get() as { total: number } | undefined;
+
+  // Count unique beneficiaries
+  const uniqueBeneficiaries = db
+    .prepare("SELECT COUNT(DISTINCT beneficiary) as count FROM schedule_events WHERE event_type = 'claimed'")
+    .get() as { count: number } | undefined;
+
+  const stats: AnalyticsStats = {
+    total_value_locked: "0", // This requires on-chain data, will be computed by frontend
+    total_claimed: (totalClaimed?.total || 0).toString(),
+    active_schedules: 0, // Requires on-chain state check
+    unique_beneficiaries: uniqueBeneficiaries?.count || 0,
+    total_schedules_created: totalCreated?.count || 0,
+    total_revoked: totalRevoked?.count || 0,
+    last_updated: Math.floor(Date.now() / 1000),
+  };
+
+  // Update cache
+  db.prepare(
+    `UPDATE analytics_cache SET 
+     total_claimed = ?, 
+     unique_beneficiaries = ?,
+     total_schedules_created = ?,
+     total_revoked = ?,
+     last_updated = ?
+     WHERE id = 1`
+  ).run(
+    stats.total_claimed,
+    stats.unique_beneficiaries,
+    stats.total_schedules_created,
+    stats.total_revoked,
+    stats.last_updated
+  );
+
+  return stats;
+}
+
+/**
+ * Get daily stats snapshots for trend analysis (last N days)
+ */
+export function getDailyStats(days: number = 30): DailySnapshot[] {
+  const db = getDb();
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceDate = since.toISOString().split("T")[0];
+
+  return db
+    .prepare(
+      `SELECT * FROM daily_stats 
+       WHERE date >= ? 
+       ORDER BY date ASC`
+    )
+    .all(sinceDate) as DailySnapshot[];
+}
+
+/**
+ * Record daily snapshot (call once per day)
+ */
+export function recordDailySnapshot(stats: AnalyticsStats): void {
+  const today = new Date().toISOString().split("T")[0];
+  
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO daily_stats 
+       (date, total_value_locked, total_claimed, active_schedules, unique_beneficiaries, total_schedules_created, total_revoked)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      today,
+      stats.total_value_locked,
+      stats.total_claimed,
+      stats.active_schedules,
+      stats.unique_beneficiaries,
+      stats.total_schedules_created,
+      stats.total_revoked
+    );
+}

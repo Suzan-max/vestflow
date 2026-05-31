@@ -54,8 +54,10 @@ export default function Navbar() {
       <div className="hidden md:flex items-center gap-8 text-sm text-zinc-400">
         <Link href="/app" className="hover:text-white transition-colors">Dashboard</Link>
         <Link href="/app/create" className="hover:text-white transition-colors">New Schedule</Link>
+        <Link href="/analytics" className="hover:text-white transition-colors">Analytics</Link>
+        <Link href="/widget" className="hover:text-white transition-colors">Widget</Link>
+        <Link href="/learn" className="hover:text-white transition-colors">Learn</Link>
         <a href="https://github.com/libby-coder/vestflow" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">GitHub</a>
-        <a href="https://github.com/libby-coder/vestflow/issues" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Contribute</a>
       </div>
 
       <div className="flex items-center gap-2 sm:gap-3">
@@ -101,8 +103,10 @@ export default function Navbar() {
         <div className="absolute top-full left-0 right-0 flex flex-col gap-2 px-4 py-4 border-b border-white/5 bg-[#08090f]/95 backdrop-blur-md md:hidden">
           <Link href="/app" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Dashboard</Link>
           <Link href="/app/create" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">New Schedule</Link>
+          <Link href="/analytics" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Analytics</Link>
+          <Link href="/widget" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Widget</Link>
+          <Link href="/learn" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Learn</Link>
           <a href="https://github.com/libby-coder/vestflow" onClick={() => setMenuOpen(false)} target="_blank" rel="noopener noreferrer" className="text-sm text-zinc-400 hover:text-white transition-colors py-2">GitHub</a>
-          <a href="https://github.com/libby-coder/vestflow/issues" onClick={() => setMenuOpen(false)} target="_blank" rel="noopener noreferrer" className="text-sm text-zinc-400 hover:text-white transition-colors py-2">Contribute</a>
         </div>
       )}
     </nav>

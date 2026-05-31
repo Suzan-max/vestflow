@@ -1,0 +1,359 @@
+# VestFlow Features Guide
+
+This document outlines all the new features implemented in VestFlow.
+
+## Features Overview
+
+### 🔗 Public Schedule Sharing (#127)
+
+**Description**: Share vesting schedules publicly without requiring wallet access.
+
+**How to Use**:
+1. Navigate to any schedule in your dashboard
+2. Click on the schedule to view its details
+3. Copy the public share link: `vestflow.xyz/schedule/[id]`
+4. Share with anyone - they can view all schedule details without a wallet
+
+**Features**:
+- View schedule details publicly
+- See vesting progress in real-time
+- View grantor and beneficiary addresses
+- Timeline visualization
+- Social media metadata (OG tags, Twitter cards)
+- No wallet required
+
+**Routes**:
+- `/schedule/[id]` - Public schedule view page
+- `/api/schedules/[id]` - Get schedule data via API
+
+---
+
+### 📊 Analytics Dashboard (#125)
+
+**Description**: Protocol-level insights into VestFlow usage.
+
+**How to Use**:
+1. Click "Analytics" in the navigation menu
+2. View real-time protocol statistics
+3. Monitor key metrics and trends
+
+**Metrics Displayed**:
+- **Total Value Locked (TVL)**: Sum of all active vesting schedules
+- **Total Claimed**: Tokens released to beneficiaries to date
+- **Active Schedules**: Currently vesting (not yet ended)
+- **Unique Beneficiaries**: Count of addresses that have claimed tokens
+- **Total Schedules**: All schedules ever created
+- **Revoked Schedules**: Cancelled schedules
+- **TVL in USD**: Estimated USD value (using current XLM price)
+
+**Additional Metrics**:
+- Average schedule value
+- Revocation rate
+- Claimed vs locked ratio
+- Schedules per beneficiary
+
+**Routes**:
+- `/analytics` - Analytics dashboard
+- `/api/analytics/stats` - Get current stats via API
+
+**Data Freshness**: Updates every 60 seconds (cached for performance)
+
+---
+
+### 🧩 Embeddable Widget (#124)
+
+**Description**: Web component that can be embedded on any website to display vesting status.
+
+**How to Use**:
+1. Go to `/widget` page
+2. Configure the schedule ID and display mode
+3. Copy the generated embed code
+4. Paste into your website HTML
+
+**Basic Installation**:
+```html
+<script src="https://vestflow.xyz/widget.js"></script>
+<vestflow-widget schedule-id="123"></vestflow-widget>
+```
+
+**Attributes**:
+- `schedule-id` (required): The vesting schedule ID to display
+- `minimal` (optional): Set to "true" for compact version
+
+**Display Modes**:
+- **Full**: Shows all schedule details, vesting progress, claimed/remaining amounts
+- **Minimal**: Compact version with just the schedule ID, status, and progress bar
+
+**Features**:
+- Dark mode by default
+- Responsive design (works on mobile and desktop)
+- No external dependencies
+- Lightweight (~5KB gzipped)
+- Works on any website
+- Real-time vesting progress
+- Scoped styles (doesn't conflict with host site)
+
+**Example with Minimal Mode**:
+```html
+<vestflow-widget schedule-id="42" minimal="true"></vestflow-widget>
+```
+
+**Routes**:
+- `/widget` - Widget documentation and embed code generator
+- `/api/schedules/[id]` - Widget data API
+
+---
+
+### 📚 Learning Center (#126)
+
+**Description**: Educational content about token vesting and Soroban smart contracts, integrated with Stellar Quest.
+
+**How to Use**:
+1. Click "Learn" in the navigation menu
+2. Browse learning modules by difficulty level
+3. Complete modules to deepen your understanding
+4. Take Stellar Quest challenges for achievements
+
+**Learning Modules**:
+
+#### 1. Introduction to Token Vesting (Beginner - 10 min)
+- Token vesting basics
+- Real-world use cases (employee compensation, investor allocation)
+- Key concepts: cliff, linear vesting, revocability
+- Intro to Stellar and Soroban
+
+#### 2. Building Smart Contracts on Soroban (Intermediate - 30 min)
+- Soroban fundamentals
+- Writing contracts in Rust
+- VestFlow contract architecture
+- Core functions and events
+- Security considerations
+- Authorization patterns
+
+#### 3. Frontend Integration (Intermediate - 20 min)
+- Setting up Stellar SDK
+- Connecting Freighter wallet
+- Fetching schedule data
+- Creating vesting schedules
+- Best practices
+
+#### 4. VestFlow Architecture Deep Dive (Advanced - 45 min)
+- System architecture overview
+- Event indexing and polling
+- Checkpoint system
+- Advanced vesting calculations
+- Revocation semantics
+- Analytics pipeline
+- Security architecture
+- Scaling considerations
+
+**Features**:
+- Progressive difficulty levels (Beginner → Intermediate → Advanced)
+- Estimated time to complete each module
+- Topic tags for easy filtering
+- Code examples and explanations
+- Links to official documentation
+- Stellar Quest integration with challenge links
+
+**Routes**:
+- `/learn` - Learning hub with all modules
+
+---
+
+## New Routes Summary
+
+| Route | Purpose | Public |
+|-------|---------|--------|
+| `/schedule/[id]` | View public schedule details | ✅ Yes |
+| `/analytics` | Protocol analytics dashboard | ✅ Yes |
+| `/widget` | Widget embed documentation | ✅ Yes |
+| `/learn` | Learning center and educational content | ✅ Yes |
+| `/api/schedules/[id]` | Get schedule data for public view and widget | ✅ Yes |
+| `/api/analytics/stats` | Get current protocol statistics | ✅ Yes |
+
+---
+
+## Navigation Updates
+
+The main Navbar now includes links to:
+- Dashboard
+- New Schedule
+- **Analytics** (new)
+- **Widget** (new)
+- **Learn** (new)
+- GitHub
+
+---
+
+## Backend Updates
+
+### Database Schema (`indexer/schema.sql`)
+
+Added new tables for analytics:
+
+```sql
+-- Analytics cache for real-time stats
+CREATE TABLE analytics_cache (
+  id INTEGER PRIMARY KEY,
+  total_value_locked TEXT,
+  total_claimed TEXT,
+  active_schedules INTEGER,
+  unique_beneficiaries INTEGER,
+  total_schedules_created INTEGER,
+  total_revoked INTEGER,
+  last_updated INTEGER
+);
+
+-- Daily snapshots for trend tracking
+CREATE TABLE daily_stats (
+  date TEXT PRIMARY KEY,
+  total_value_locked TEXT,
+  total_claimed TEXT,
+  active_schedules INTEGER,
+  unique_beneficiaries INTEGER,
+  total_schedules_created INTEGER,
+  total_revoked INTEGER,
+  created_at INTEGER
+);
+```
+
+### Indexer Functions (`indexer/src/db.ts`)
+
+New analytics-related functions:
+- `getAnalyticsStats()` - Fetch current cached stats
+- `computeAnalyticsStats()` - Calculate and cache stats
+- `getDailyStats(days)` - Get historical daily snapshots
+- `recordDailySnapshot(stats)` - Record daily snapshot
+
+---
+
+## Accessing the Features
+
+### From the Dashboard
+- Click "Analytics" to view protocol statistics
+- Click a schedule's ID to get a shareable link
+- Click "Widget" to embed schedules on your site
+- Click "Learn" to access educational content
+
+### From the Landing Page
+- New "Explore More" section showcases all features
+- Quick cards for each feature with descriptions
+
+### Direct URLs
+- Public schedule: `vestflow.xyz/schedule/0` (replace 0 with schedule ID)
+- Analytics: `vestflow.xyz/analytics`
+- Widget: `vestflow.xyz/widget`
+- Learn: `vestflow.xyz/learn`
+
+---
+
+## API Usage Examples
+
+### Get Schedule Data
+```bash
+curl https://vestflow.xyz/api/schedules/123
+```
+
+Response:
+```json
+{
+  "schedule": {
+    "id": 123,
+    "grantor": "GXXX...",
+    "beneficiary": "GYYY...",
+    "total_amount": "1000000000",
+    "claimed": "250000000",
+    ...
+  },
+  "claimable": "50000000",
+  "network": "testnet"
+}
+```
+
+### Get Protocol Stats
+```bash
+curl https://vestflow.xyz/api/analytics/stats
+```
+
+Response:
+```json
+{
+  "total_value_locked": "50000000000",
+  "total_claimed": "10000000000",
+  "active_schedules": 42,
+  "unique_beneficiaries": 28,
+  "total_schedules": 50,
+  "total_revoked": 3,
+  "tvl_usd": "6000.00",
+  "last_updated": 1234567890
+}
+```
+
+---
+
+## Integration Guide
+
+### Embedding the Widget
+
+To embed VestFlow schedules on your website:
+
+1. Add the script tag to your HTML:
+```html
+<script src="https://vestflow.xyz/widget.js"></script>
+```
+
+2. Add the widget element wherever you want to display it:
+```html
+<vestflow-widget schedule-id="YOUR_SCHEDULE_ID"></vestflow-widget>
+```
+
+3. (Optional) Customize the width:
+```html
+<style>
+  vestflow-widget {
+    max-width: 400px;
+  }
+</style>
+```
+
+### Linking to Public Schedules
+
+Link to public schedule views to give beneficiaries an easy way to check their vesting status:
+
+```html
+<a href="https://vestflow.xyz/schedule/YOUR_SCHEDULE_ID">
+  View Your Vesting Schedule
+</a>
+```
+
+---
+
+## Performance Considerations
+
+- **Public Schedule View**: Cached for 30 seconds
+- **Analytics Stats**: Cached for 60 seconds with 5-minute stale-while-revalidate
+- **Widget**: Loads data on-demand with caching
+- **Learning Center**: Static content (no database queries)
+
+---
+
+## Future Enhancements
+
+Potential improvements for future releases:
+- Advanced analytics charts (Recharts/Chart.js integration)
+- Email notifications when tokens become claimable
+- CSV export of schedule data
+- Batch schedule creation
+- Schedule analytics per grantor/beneficiary
+- Widget customization (colors, fonts)
+- More Stellar Quest integrations
+- Event webhooks for real-time updates
+
+---
+
+## Support
+
+For issues or questions:
+- GitHub: [vestflow-labs/vestflow](https://github.com/vestflow-labs/vestflow)
+- Stellar Community: [stellar.org/community](https://stellar.org/community)
+- Stellar Quest: [stellar.quest](https://stellar.quest)

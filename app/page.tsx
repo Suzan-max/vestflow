@@ -56,7 +56,33 @@ export default function LandingPage() {
             CCZ6AE75C27DMB3SOIHK7WZSBUG3NQPVLHSVEBQ2FSAEVGRJ5TXAZWCX
           </a>
         </div>
-      </main>
-    </>
-  );
-}
+
+        {/* New Features Section */}
+        <div className="mt-20">
+          <h2 className="text-3xl font-bold mb-10 text-center">Explore More</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Link href="/schedule/0" className="card p-5 hover:bg-zinc-900 transition-colors">
+              <div className="text-3xl mb-3">🔗</div>
+              <h3 className="font-semibold mb-2">Public Schedules</h3>
+              <p className="text-sm text-zinc-400">View and share vesting schedules publicly</p>
+            </Link>
+            
+            <Link href="/analytics" className="card p-5 hover:bg-zinc-900 transition-colors">
+              <div className="text-3xl mb-3">📊</div>
+              <h3 className="font-semibold mb-2">Analytics</h3>
+              <p className="text-sm text-zinc-400">Protocol-level stats and metrics</p>
+            </Link>
+
+            <Link href="/widget" className="card p-5 hover:bg-zinc-900 transition-colors">
+              <div className="text-3xl mb-3">🧩</div>
+              <h3 className="font-semibold mb-2">Embed Widget</h3>
+              <p className="text-sm text-zinc-400">Add vesting to your website</p>
+            </Link>
+
+            <Link href="/learn" className="card p-5 hover:bg-zinc-900 transition-colors">
+              <div className="text-3xl mb-3">📚</div>
+              <h3 className="font-semibold mb-2">Learn</h3>
+              <p className="text-sm text-zinc-400">Master Soroban smart contracts</p>
+            </Link>
+          </div>
+        </div>
