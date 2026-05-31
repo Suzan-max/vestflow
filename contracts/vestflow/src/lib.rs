@@ -1,7 +1,27 @@
 #![no_std]
 
+//! # VestFlow Contract
+//!
+//! Trustless token vesting schedules on Stellar / Soroban.
+//!
+//! ## Error Messages
+//!
+//! The contract panics with plain string messages that callers can match on.
+//! All public-facing error strings are listed below.
+//!
+//! | Error string                | Triggered by                                                  |
+//! |-----------------------------|---------------------------------------------------------------|
+//! | `"Schedule not found"`      | `get_schedule`, `claim`, `revoke` with an unknown ID         |
+//! | `"Nothing to claim yet"`    | `claim` called before any tokens have vested                  |
+//! | `"Schedule has been revoked"` | `claim` called on a schedule that was already revoked       |
+//! | `"Schedule is not revocable"` | `revoke` called on an irrevocable schedule                  |
+//! | `"Already revoked"`         | `revoke` called a second time on the same schedule            |
+//! | `"Amount must be positive"` | `create_schedule` with `total_amount` ≤ 0                    |
+//! | `"Duration must be positive"` | `create_schedule` with `duration` = 0                      |
+//! | `"Cliff cannot exceed duration"` | `create_schedule` with `cliff_duration` > `duration`    |
+
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, String,
+    contract, contractimpl, contracttype, symbol_short, token, vec, Address, Env, Vec,
 };
 
 #[contracttype]
@@ -15,10 +35,19 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, PartialEq)]
 pub enum VestingKind {
-    /// Tokens unlock linearly from start_time to start_time + duration.
+    /// Tokens unlock linearly from `start_time` to `start_time + duration`.
+    /// The `cliff_duration` field is ignored for this variant.
     Linear,
-    /// No tokens unlock until cliff_time, then all unlock at once.
+    /// No tokens unlock until `start_time + cliff_duration`, then the full
+    /// amount unlocks at once.
     Cliff,
+    /// No tokens unlock until `start_time + cliff_duration` (the cliff).
+    /// After the cliff, tokens unlock linearly from the cliff date to
+    /// `start_time + duration`.
+    ///
+    /// This models the most common real-world employee vesting schedule:
+    /// a 1-year cliff followed by linear vesting over the remaining term.
+    LinearWithCliff,
 }
 
 #[contracttype]
@@ -39,7 +68,11 @@ pub struct VestingSchedule {
     pub start_time: u64,
     /// Vesting duration in seconds.
     pub duration: u64,
-    /// Cliff in seconds from start_time (only used for Cliff kind).
+    /// Cliff in seconds from `start_time`.
+    ///
+    /// - `Linear`: ignored.
+    /// - `Cliff`: tokens unlock all-at-once after this many seconds.
+    /// - `LinearWithCliff`: no tokens until this point; linear from here to end.
     pub cliff_duration: u64,
     pub kind: VestingKind,
     /// Whether the grantor can revoke unvested tokens.
@@ -73,6 +106,20 @@ impl VestingSchedule {
                     (self.total_amount * elapsed as i128) / self.duration as i128
                 }
             }
+            VestingKind::LinearWithCliff => {
+                // Before cliff: nothing vests.
+                if elapsed < self.cliff_duration {
+                    return 0;
+                }
+                // After full duration: everything is vested.
+                if elapsed >= self.duration {
+                    return self.total_amount;
+                }
+                // Between cliff and end: linear from cliff_duration to duration.
+                let linear_duration = self.duration - self.cliff_duration;
+                let linear_elapsed = elapsed - self.cliff_duration;
+                (self.total_amount * linear_elapsed as i128) / linear_duration as i128
+            }
         }
     }
 
@@ -92,6 +139,12 @@ impl VestFlowContract {
     ///
     /// The grantor must approve the contract to transfer `total_amount` of
     /// `token` before calling this function.
+    ///
+    /// # Errors
+    ///
+    /// Panics with `"Amount must be positive"` if `total_amount` ≤ 0.
+    /// Panics with `"Duration must be positive"` if `duration` = 0.
+    /// Panics with `"Cliff cannot exceed duration"` if `cliff_duration` > `duration`.
     pub fn create_schedule(
         env: Env,
         grantor: Address,
@@ -152,6 +205,12 @@ impl VestFlowContract {
     }
 
     /// Claim all currently vested but unclaimed tokens.
+    ///
+    /// # Errors
+    ///
+    /// Panics with `"Schedule not found"` if `schedule_id` does not exist.
+    /// Panics with `"Schedule has been revoked"` if the schedule was revoked.
+    /// Panics with `"Nothing to claim yet"` if no tokens are currently claimable.
     pub fn claim(env: Env, schedule_id: u64) {
         let mut schedule: VestingSchedule = env
             .storage()
@@ -185,6 +244,12 @@ impl VestFlowContract {
     /// Revoke a vesting schedule (grantor only, revocable schedules only).
     /// Unvested tokens are returned to the grantor. Already-vested tokens
     /// remain claimable by the beneficiary.
+    ///
+    /// # Errors
+    ///
+    /// Panics with `"Schedule not found"` if `schedule_id` does not exist.
+    /// Panics with `"Schedule is not revocable"` if the schedule is irrevocable.
+    /// Panics with `"Already revoked"` if the schedule has already been revoked.
     pub fn revoke(env: Env, schedule_id: u64) {
         let mut schedule: VestingSchedule = env
             .storage()
@@ -220,6 +285,10 @@ impl VestFlowContract {
     }
 
     /// Read a vesting schedule by ID.
+    ///
+    /// # Errors
+    ///
+    /// Panics with `"Schedule not found"` if `schedule_id` does not exist.
     pub fn get_schedule(env: Env, schedule_id: u64) -> VestingSchedule {
         env.storage()
             .instance()
@@ -236,13 +305,43 @@ impl VestFlowContract {
     }
 
     /// Preview how many tokens are claimable right now for a given schedule.
+    ///
+    /// Returns 0 if `schedule_id` is unknown (does not panic).
     pub fn claimable(env: Env, schedule_id: u64) -> i128 {
-        let schedule: VestingSchedule = env
+        match env
             .storage()
             .instance()
-            .get(&DataKey::Schedule(schedule_id))
-            .expect("Schedule not found");
-        schedule.claimable_at(env.ledger().timestamp())
+            .get::<DataKey, VestingSchedule>(&DataKey::Schedule(schedule_id))
+        {
+            Some(schedule) => schedule.claimable_at(env.ledger().timestamp()),
+            None => 0,
+        }
+    }
+
+    /// Batch view: return claimable amounts for multiple schedule IDs in a
+    /// single simulation round-trip.
+    ///
+    /// Results are returned in the same order as the input `ids` vector.
+    /// Unknown IDs return 0 instead of panicking, so the caller can safely
+    /// pass the full ID range without knowing which ones exist.
+    ///
+    /// This replaces the `Promise.all(claimable)` pattern in the frontend
+    /// dashboard, reducing N simulation round-trips to 1.
+    pub fn claimable_bulk(env: Env, ids: Vec<u64>) -> Vec<i128> {
+        let now = env.ledger().timestamp();
+        let mut results: Vec<i128> = vec![&env];
+        for id in ids.iter() {
+            let amount = match env
+                .storage()
+                .instance()
+                .get::<DataKey, VestingSchedule>(&DataKey::Schedule(id))
+            {
+                Some(schedule) => schedule.claimable_at(now),
+                None => 0,
+            };
+            results.push_back(amount);
+        }
+        results
     }
 }
 
@@ -384,5 +483,103 @@ mod test {
             &1000, &0, &1000, &0, &VestingKind::Linear, &false,
         );
         client.revoke(&id);
+    }
+
+    // --- Issue #19: LinearWithCliff tests ---
+
+    #[test]
+    fn test_linear_with_cliff_before_cliff_returns_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        // 1000s duration, 400s cliff
+        set_time(&env, 0);
+        let id = client.create_schedule(
+            &grantor, &beneficiary, &token_addr,
+            &1000, &0, &1000, &400, &VestingKind::LinearWithCliff, &false,
+        );
+
+        // Before cliff: nothing claimable
+        set_time(&env, 399);
+        assert_eq!(client.claimable(&id), 0);
+    }
+
+    #[test]
+    fn test_linear_with_cliff_after_cliff_linear_release() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+        let token = TokenClient::new(&env, &token_addr);
+
+        // 1000s duration, 400s cliff → 600s linear window
+        set_time(&env, 0);
+        let id = client.create_schedule(
+            &grantor, &beneficiary, &token_addr,
+            &1200, &0, &1000, &400, &VestingKind::LinearWithCliff, &false,
+        );
+
+        // At cliff: 0/600 through linear window → 0 tokens
+        set_time(&env, 400);
+        assert_eq!(client.claimable(&id), 0);
+
+        // Halfway through linear window (elapsed=700, linear_elapsed=300, linear_duration=600)
+        // vested = 1200 * 300 / 600 = 600
+        set_time(&env, 700);
+        assert_eq!(client.claimable(&id), 600);
+        client.claim(&id);
+        assert_eq!(token.balance(&beneficiary), 600);
+
+        // Fully vested at end of duration
+        set_time(&env, 1000);
+        assert_eq!(client.claimable(&id), 600);
+        client.claim(&id);
+        assert_eq!(token.balance(&beneficiary), 1200);
+    }
+
+    // --- Issue #18: claimable_bulk tests ---
+
+    #[test]
+    fn test_claimable_bulk_returns_in_order() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        set_time(&env, 0);
+        // Schedule 1: 1000 tokens, 1000s linear
+        let id1 = client.create_schedule(
+            &grantor, &beneficiary, &token_addr,
+            &1000, &0, &1000, &0, &VestingKind::Linear, &false,
+        );
+        // Schedule 2: 2000 tokens, 1000s cliff at 500s
+        let id2 = client.create_schedule(
+            &grantor, &beneficiary, &token_addr,
+            &2000, &0, &1000, &500, &VestingKind::Cliff, &false,
+        );
+
+        // At t=500: id1 has 500 claimable, id2 has 2000 claimable (cliff hit)
+        set_time(&env, 500);
+        let ids = soroban_sdk::vec![&env, id1, id2];
+        let bulk = client.claimable_bulk(&ids);
+        assert_eq!(bulk.get(0).unwrap(), 500);
+        assert_eq!(bulk.get(1).unwrap(), 2000);
+    }
+
+    #[test]
+    fn test_claimable_bulk_unknown_id_returns_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        set_time(&env, 0);
+        let _id = client.create_schedule(
+            &grantor, &beneficiary, &token_addr,
+            &1000, &0, &1000, &0, &VestingKind::Linear, &false,
+        );
+
+        // ID 999 does not exist — should return 0, not panic
+        let ids = soroban_sdk::vec![&env, 999_u64];
+        let bulk = client.claimable_bulk(&ids);
+        assert_eq!(bulk.get(0).unwrap(), 0);
     }
 }

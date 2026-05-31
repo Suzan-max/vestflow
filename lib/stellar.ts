@@ -83,12 +83,42 @@ export async function getClaimable(id: number, publicKey?: string): Promise<bigi
   } catch { return 0n; }
 }
 
+/**
+ * Fetch claimable amounts for every schedule ID in a single simulation
+ * round-trip by calling the `claimable_bulk` contract view function.
+ *
+ * Returns amounts in the same order as `ids`. Unknown IDs return 0n.
+ */
+export async function getClaimableBulk(
+  ids: number[],
+  publicKey?: string
+): Promise<bigint[]> {
+  if (ids.length === 0) return [];
+  try {
+    const idsVal = xdr.ScVal.scvVec(
+      ids.map((id) => nativeToScVal(id, { type: "u64" }))
+    );
+    const val = await simulate("claimable_bulk", [idsVal], publicKey);
+    const native = scValToNative(val) as bigint[];
+    return native.map((v) => BigInt(v));
+  } catch {
+    // Fallback: return zeros so callers always get a valid array
+    return ids.map(() => 0n);
+  }
+}
+
 export async function getAllSchedules(publicKey?: string): Promise<ScheduleData[]> {
   const count = await getScheduleCount();
-  const results = await Promise.all(
-    Array.from({ length: count }, (_, i) => getSchedule(i + 1, publicKey))
-  );
-  return results.filter(Boolean) as ScheduleData[];
+  if (count === 0) return [];
+
+  // Fetch all schedule structs in parallel (N calls)
+  const ids = Array.from({ length: count }, (_, i) => i + 1);
+  const [schedules, _claimableAmounts] = await Promise.all([
+    Promise.all(ids.map((id) => getSchedule(id, publicKey))),
+    getClaimableBulk(ids, publicKey), // single simulation round-trip
+  ]);
+
+  return schedules.filter(Boolean) as ScheduleData[];
 }
 
 // ---------- Write ----------
@@ -130,16 +160,14 @@ export async function createSchedule(
   startTime: number,
   durationDays: number,
   cliffDays: number,
-  kind: "Linear" | "Cliff",
+  kind: "Linear" | "Cliff" | "LinearWithCliff",
   revocable: boolean
 ): Promise<string> {
   const totalStroops = BigInt(Math.round(totalAmountXlm * 10_000_000));
   const durationSecs = durationDays * 86400;
   const cliffSecs = cliffDays * 86400;
 
-  const kindVal = kind === "Linear"
-    ? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Linear")])
-    : xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Cliff")]);
+  const kindVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(kind)]);
 
   const args: xdr.ScVal[] = [
     nativeToScVal(publicKey, { type: "address" }),
@@ -175,7 +203,7 @@ export interface ScheduleData {
   start_time: number;
   duration: number;
   cliff_duration: number;
-  kind: "Linear" | "Cliff";
+  kind: "Linear" | "Cliff" | "LinearWithCliff";
   revocable: boolean;
   revoked: boolean;
 }
@@ -191,7 +219,7 @@ function parseSchedule(raw: any): ScheduleData {
     start_time: Number(raw.start_time ?? 0),
     duration: Number(raw.duration ?? 0),
     cliff_duration: Number(raw.cliff_duration ?? 0),
-    kind: raw.kind === "Cliff" ? "Cliff" : "Linear",
+    kind: raw.kind === "Cliff" ? "Cliff" : raw.kind === "LinearWithCliff" ? "LinearWithCliff" : "Linear",
     revocable: Boolean(raw.revocable),
     revoked: Boolean(raw.revoked),
   };

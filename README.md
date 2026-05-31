@@ -14,10 +14,12 @@ Live on **Stellar Testnet** · Contract: `CCZ6AE75C27DMB3SOIHK7WZSBUG3NQPVLHSVEB
 |---|---|
 | Linear vesting | Tokens unlock continuously from `start_time` to `start_time + duration` |
 | Cliff vesting | No tokens unlock until the cliff date, then the full amount unlocks at once |
+| **Linear+Cliff vesting** | No tokens until the cliff, then linear release from cliff to end date (typical employee schedule) |
 | Revocable schedules | Grantor can cancel mid-flight; unvested tokens return to grantor, already-vested tokens stay claimable |
 | Irrevocable schedules | Once created, the grantor has no way to claw back tokens |
 | Multi-schedule | A single wallet can be grantor or beneficiary on unlimited independent schedules |
 | On-chain events | `created`, `claimed`, and `revoked` events emitted for indexers |
+| Bulk claimable query | Fetch all claimable amounts in one RPC simulation via `claimable_bulk` |
 
 ---
 
@@ -91,6 +93,14 @@ vestflow/
 
 ## Contract reference
 
+### `VestingKind` enum
+
+| Variant | Behaviour |
+|---|---|
+| `Linear` | Tokens drip linearly from `start_time` to `start_time + duration`. `cliff_duration` is ignored. |
+| `Cliff` | No tokens until `start_time + cliff_duration`; then the full amount unlocks at once. |
+| `LinearWithCliff` | No tokens before `start_time + cliff_duration`; linear release from the cliff date to `start_time + duration`. Models the classic 1-year cliff + 3-year linear employee schedule. |
+
 ### `create_schedule`
 
 ```rust
@@ -103,7 +113,7 @@ pub fn create_schedule(
     start_time: u64,        // unix timestamp
     duration: u64,          // seconds
     cliff_duration: u64,    // seconds from start_time (0 for no cliff)
-    kind: VestingKind,      // Linear | Cliff
+    kind: VestingKind,      // Linear | Cliff | LinearWithCliff
     revocable: bool,
 ) -> u64                    // returns the new schedule ID
 ```
@@ -116,7 +126,7 @@ The grantor must have already called `token.approve(contract, total_amount)` bef
 pub fn claim(env: Env, schedule_id: u64)
 ```
 
-Called by the beneficiary. Transfers `vested_amount - already_claimed` from the contract to the beneficiary wallet. Panics with `"Nothing to claim yet"` if there is nothing available.
+Called by the beneficiary. Transfers `vested_amount - already_claimed` from the contract to the beneficiary wallet.
 
 ### `revoke`
 
@@ -132,7 +142,15 @@ Grantor-only. Marks the schedule revoked and returns the unvested portion to the
 pub fn claimable(env: Env, schedule_id: u64) -> i128
 ```
 
-Read-only. Returns how many base units are currently claimable. Safe to call without a transaction (simulated).
+Read-only. Returns how many base units are currently claimable for `schedule_id`. Returns `0` for unknown IDs (does not panic).
+
+### `claimable_bulk`
+
+```rust
+pub fn claimable_bulk(env: Env, ids: Vec<u64>) -> Vec<i128>
+```
+
+Read-only. Returns claimable amounts for every ID in `ids` in a **single** simulation round-trip. Results are in the same order as the input; unknown IDs return `0`. Use this from the dashboard instead of calling `claimable` once per schedule.
 
 ### `get_schedule`
 
@@ -149,6 +167,21 @@ pub fn schedule_count(env: Env) -> u64
 ```
 
 Read-only. Returns the total number of schedules ever created.
+
+### Error messages
+
+The contract panics with plain strings that callers can match on. All public-facing error strings are documented here.
+
+| Error string | Triggered by |
+|---|---|
+| `"Schedule not found"` | `get_schedule`, `claim`, or `revoke` called with an unknown ID |
+| `"Nothing to claim yet"` | `claim` called before any tokens have vested |
+| `"Schedule has been revoked"` | `claim` called on a schedule that was already revoked |
+| `"Schedule is not revocable"` | `revoke` called on an irrevocable schedule |
+| `"Already revoked"` | `revoke` called a second time on the same schedule |
+| `"Amount must be positive"` | `create_schedule` with `total_amount` ≤ 0 |
+| `"Duration must be positive"` | `create_schedule` with `duration` = 0 |
+| `"Cliff cannot exceed duration"` | `create_schedule` with `cliff_duration` > `duration` |
 
 ---
 
@@ -226,6 +259,32 @@ stellar contract deploy \
 
 ---
 
+## Deploy to mainnet
+
+Before deploying to mainnet, work through the checklist below.
+
+### Mainnet deployment checklist
+
+- [ ] **Security audit** — contract code reviewed internally or by a third party
+- [ ] **Immutability decision** — the contract has no upgrade path; confirm this is intentional for mainnet
+- [ ] **Deployer key management** — hardware wallet or secure offline key; never store the private key in plaintext
+- [ ] **Environment variables** — set `NEXT_PUBLIC_NETWORK=mainnet` and the mainnet contract/token addresses in `.env.local`
+- [ ] **CSP** — verify `next.config.ts` allows the mainnet RPC endpoint (`https://mainnet.sorobanrpc.com`)
+- [ ] **Smoke test** — run `scripts/deploy-mainnet.sh` on a staging environment first
+
+### Running the mainnet deploy script
+
+```bash
+chmod +x scripts/deploy-mainnet.sh
+
+# Set the name of your funded Stellar CLI key:
+DEPLOYER_KEY=my-mainnet-key ./scripts/deploy-mainnet.sh
+```
+
+The script builds the WASM, prompts for confirmation, deploys, and prints the contract ID to add to `.env.local`.
+
+---
+
 ## CLI usage examples
 
 Interact with the deployed contract directly from the terminal:
@@ -279,7 +338,10 @@ Good first issues are labelled [`good first issue`](https://github.com/libby-cod
 - [ ] ERC-20 / SEP-41 arbitrary token support (currently XLM only)
 - [ ] Vesting schedule NFT receipt tokens
 - [ ] Batch schedule creation
-- [ ] Mainnet deployment
+- [x] Linear+Cliff hybrid vesting kind
+- [x] `claimable_bulk` for dashboard efficiency
+- [x] Error messages documented in contract spec and README
+- [x] Mainnet deployment checklist + `scripts/deploy-mainnet.sh`
 - [ ] Subgraph / event indexer
 - [ ] Mobile-friendly dashboard
 
