@@ -33,6 +33,7 @@
 //! | `"Amount must be positive"`     | `create_schedule` with `total_amount` ≤ 0                        |
 //! | `"Duration must be positive"`   | `create_schedule` with `duration` = 0                            |
 //! | `"Cliff cannot exceed duration"`| `create_schedule` with `cliff_duration` > `duration`             |
+//! | `"Lockup cannot be less than cliff"` | `create_schedule` with `lockup_duration` < `cliff_duration`   |
 //! | `"Beneficiary must differ from grantor"` | `create_schedule` with `beneficiary == grantor`                 |
 //! | `"Re-entrant call detected"`    | A state-mutating entry point is called while already executing   |
 //! | `"Upgrade authority already initialized"` | `initialize_upgrade_authority` called more than once |
@@ -41,6 +42,37 @@
 //! | `"No pending upgrade"` | Upgrade execution/cancellation attempted without an announcement |
 //! | `"Upgrade timelock still active"` | Upgrade execution attempted before 48 hours elapsed |
 //! | `"Upgrade executable time overflow"` | Upgrade announcement timestamp cannot safely add the timelock |
+//!
+//! ## Events
+//!
+//! All state transitions emit structured events for indexers and monitoring systems.
+//!
+//! | Event Name    | Topics                                    | Data                                                                                      |
+//! |---------------|-------------------------------------------|-------------------------------------------------------------------------------------------|
+//! | `created`     | (symbol, schedule_id)                     | (grantor, beneficiary, token, amount, start, duration, cliff, lockup, kind, revocable)    |
+//! | `claimed`     | (symbol, schedule_id)                     | (beneficiary, token, amount_claimed, total_claimed, timestamp)                            |
+//! | `revoked`     | (symbol, schedule_id)                     | (grantor, token, unvested_amount, vested_amount, timestamp)                               |
+//! | `paused`      | (symbol, schedule_id)                     | (grantor, paused_at)                                                                      |
+//! | `resumed`     | (symbol, schedule_id)                     | (grantor, pause_duration, timestamp)                                                      |
+//! | `bnf_chng`    | (symbol, schedule_id)                     | (old_beneficiary, new_beneficiary, timestamp)                                             |
+//! | `upgr_auth`   | (symbol, authority_address)               | timestamp                                                                                 |
+//! | `upgr_ann`    | (symbol, authority)                       | (wasm_hash, announced_at, executable_at)                                                  |
+//! | `upgr_exe`    | (symbol, authority)                       | (wasm_hash, announced_at, executable_at)                                                  |
+//! | `upgr_can`    | (symbol, authority)                       | (wasm_hash, announced_at, executable_at)                                                  |
+//! | `orc_init`    | (symbol, oracle_address)                  | timestamp                                                                                 |
+//! | `mile_en`     | (symbol, schedule_id)                     | (grantor, milestone_count, timestamp)                                                     |
+//! | `mile_att`    | (symbol, schedule_id)                     | (oracle, milestone_index, timestamp)                                                      |
+//! | `nft_init`    | (symbol, nft_contract)                    | timestamp                                                                                 |
+//!
+//! ## SAC Token Support
+//!
+//! The contract supports any Stellar Asset Contract (SAC) token, including:
+//! - Native XLM (wrapped as SAC)
+//! - Classic Stellar assets (wrapped as SAC)
+//! - Custom Soroban tokens implementing the token interface
+//!
+//! Token contracts must implement the standard `transfer` function. The contract
+//! verifies token transfers succeed and stores the token address in each schedule.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, BytesN,
@@ -61,6 +93,7 @@ pub enum VestFlowError {
     DurationZero = 6,
     CliffExceedsDuration = 7,
     ScheduleRevoked = 8,
+    LockupLessThanCliff = 9,
 }
 
 #[contracttype]
@@ -166,6 +199,11 @@ pub struct VestingSchedule {
     /// - `LinearWithCliff`: no tokens until this point; linear from here to end.
     /// - `Graded`: ignored (milestones define the schedule).
     pub cliff_duration: u64,
+    /// Lockup period in seconds from `start_time`.
+    /// During lockup, tokens are vested (earned) but non-transferable.
+    /// Beneficiary can claim after lockup expires even if tokens vested earlier.
+    /// Must be >= cliff_duration.
+    pub lockup_duration: u64,
     pub kind: VestingKind,
     /// Whether the grantor can revoke unvested tokens.
     pub revocable: bool,
@@ -289,6 +327,13 @@ impl VestingSchedule {
     /// Tokens vested but not yet claimed.
     pub fn claimable_at(&self, now: u64) -> i128 {
         let vested = self.vested_at(now);
+        
+        // Check if lockup period has expired
+        let lockup_end = self.start_time.saturating_add(self.lockup_duration);
+        if now < lockup_end {
+            return 0;
+        }
+        
         if vested > self.claimed {
             vested - self.claimed
         } else {
@@ -355,7 +400,7 @@ impl VestFlowContract {
             .instance()
             .set(&DataKey::UpgradeAuthority, &authority);
         env.events()
-            .publish((symbol_short!("upgr_auth"), authority), ());
+            .publish((symbol_short!("upgr_auth"), authority.clone()), env.ledger().timestamp());
     }
 
     /// Return the configured upgrade authority.
@@ -487,6 +532,7 @@ impl VestFlowContract {
     /// Panics with `"Amount must be positive"` if `total_amount` ≤ 0.
     /// Panics with `"Duration must be positive"` if `duration` = 0.
     /// Panics with `"Cliff cannot exceed duration"` if `cliff_duration` > `duration`.
+    /// Panics with `"Lockup cannot be less than cliff"` if `lockup_duration` < `cliff_duration`.
     /// Panics with `"Beneficiary must differ from grantor"` if `beneficiary == grantor`.
     pub fn create_schedule(
         env: Env,
@@ -497,6 +543,7 @@ impl VestFlowContract {
         start_time: u64,
         duration: u64,
         cliff_duration: u64,
+        lockup_duration: u64,
         kind: VestingKind,
         revocable: bool,
     ) -> Result<u64, VestFlowError> {
@@ -515,6 +562,7 @@ impl VestFlowContract {
         if cliff_duration > duration {
             return Err(VestFlowError::CliffExceedsDuration);
         }
+        assert!(lockup_duration >= cliff_duration, "Lockup cannot be less than cliff");
 
         let count: u64 = env
             .storage()
@@ -542,7 +590,8 @@ impl VestFlowContract {
             start_time,
             duration,
             cliff_duration,
-            kind,
+            lockup_duration,
+            kind: kind.clone(),
             revocable,
             revoked: false,
             vested_at_revoke: 0,
@@ -582,8 +631,8 @@ impl VestFlowContract {
         );
 
         env.events().publish(
-            (symbol_short!("created"), grantor, beneficiary, token),
-            (id, total_amount),
+            (symbol_short!("created"), id),
+            (grantor, beneficiary, token, total_amount, start_time, duration, cliff_duration, lockup_duration, kind, revocable),
         );
 
         Ok(id)
@@ -611,6 +660,7 @@ impl VestFlowContract {
         token: Address,
         total_amount: i128,
         start_time: u64,
+        lockup_duration: u64,
         revocable: bool,
         milestones: Vec<GradedMilestone>,
     ) -> u64 {
@@ -649,6 +699,7 @@ impl VestFlowContract {
             start_time,
             duration,
             cliff_duration: 0,
+            lockup_duration,
             kind: VestingKind::Graded,
             revocable,
             revoked: false,
@@ -689,8 +740,8 @@ impl VestFlowContract {
         );
 
         env.events().publish(
-            (symbol_short!("created"), grantor, beneficiary, token),
-            (id, total_amount),
+            (symbol_short!("created"), id),
+            (grantor, beneficiary, token, total_amount, start_time, duration, lockup_duration, VestingKind::Graded, revocable, milestones),
         );
 
         id
@@ -725,8 +776,8 @@ impl VestFlowContract {
             .instance()
             .set(&DataKey::Schedule(schedule_id), &schedule);
         env.events().publish(
-            (symbol_short!("paused"), schedule.grantor.clone()),
-            schedule_id,
+            (symbol_short!("paused"), schedule_id),
+            (schedule.grantor.clone(), schedule.paused_at),
         );
     }
 
@@ -759,8 +810,8 @@ impl VestFlowContract {
             .instance()
             .set(&DataKey::Schedule(schedule_id), &schedule);
         env.events().publish(
-            (symbol_short!("resumed"), schedule.grantor.clone()),
-            (schedule_id, pause_duration),
+            (symbol_short!("resumed"), schedule_id),
+            (schedule.grantor.clone(), pause_duration, env.ledger().timestamp()),
         );
     }
 
@@ -784,7 +835,7 @@ impl VestFlowContract {
             .instance()
             .set(&DataKey::PerformanceOracle, &oracle);
         env.events()
-            .publish((symbol_short!("orc_init"), oracle), ());
+            .publish((symbol_short!("orc_init"), oracle.clone()), env.ledger().timestamp());
     }
 
     /// Get the configured performance oracle address.
@@ -833,8 +884,8 @@ impl VestFlowContract {
         );
 
         env.events().publish(
-            (symbol_short!("mile_en"), schedule.grantor.clone()),
-            schedule_id,
+            (symbol_short!("mile_en"), schedule_id),
+            (schedule.grantor.clone(), milestones.len(), env.ledger().timestamp()),
         );
     }
 
@@ -878,8 +929,8 @@ impl VestFlowContract {
             .set(&DataKey::PerformanceMilestones(schedule_id), &milestones);
 
         env.events().publish(
-            (symbol_short!("mile_att"), oracle),
-            (schedule_id, milestone_index),
+            (symbol_short!("mile_att"), schedule_id),
+            (oracle, milestone_index, env.ledger().timestamp()),
         );
     }
 
@@ -910,7 +961,7 @@ impl VestFlowContract {
             .instance()
             .set(&DataKey::NftContract, &nft_contract);
         env.events()
-            .publish((symbol_short!("nft_init"), nft_contract), ());
+            .publish((symbol_short!("nft_init"), nft_contract.clone()), env.ledger().timestamp());
     }
 
     /// Get the configured NFT contract address.
@@ -1087,7 +1138,7 @@ impl VestFlowContract {
 
         env.events().publish(
             (symbol_short!("bnf_chng"), schedule_id),
-            (old_beneficiary, new_beneficiary),
+            (old_beneficiary, new_beneficiary, env.ledger().timestamp()),
         );
         Ok(())
     }
@@ -1324,6 +1375,7 @@ mod test {
             &1000,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &true,
         );
@@ -1357,6 +1409,7 @@ mod test {
             &0,
             &1000,
             &500,
+            &500,
             &VestingKind::Cliff,
             &false,
         );
@@ -1388,6 +1441,7 @@ mod test {
             &0,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &true,
         );
@@ -1418,6 +1472,7 @@ mod test {
             &1000,
             &0,
             &1000,
+            &0,
             &0,
             &VestingKind::Linear,
             &true,
@@ -1454,6 +1509,7 @@ mod test {
             &1000,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &false,
         );
@@ -1475,6 +1531,7 @@ mod test {
             &1000,
             &0,
             &1000,
+            &0,
             &0,
             &VestingKind::Linear,
             &false,
@@ -1499,6 +1556,7 @@ mod test {
             &1000,
             &0,
             &1000,
+            &400,
             &400,
             &VestingKind::LinearWithCliff,
             &false,
@@ -1525,6 +1583,7 @@ mod test {
             &1200,
             &0,
             &1000,
+            &400,
             &400,
             &VestingKind::LinearWithCliff,
             &false,
@@ -1566,6 +1625,7 @@ mod test {
             &0,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &false,
         );
@@ -1577,6 +1637,7 @@ mod test {
             &2000,
             &0,
             &1000,
+            &500,
             &500,
             &VestingKind::Cliff,
             &false,
@@ -1605,6 +1666,7 @@ mod test {
             &0,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &false,
         );
@@ -1631,6 +1693,7 @@ mod test {
             start_time: 0,
             duration: 1_000,
             cliff_duration: 0,
+            lockup_duration: 0,
             kind: VestingKind::Linear,
             revocable: false,
             revoked: false,
@@ -1641,7 +1704,6 @@ mod test {
             requires_milestones: false,
             milestones: vec![&env],
         };
-        // elapsed >> duration — must return exactly total_amount, not overflow
         assert_eq!(schedule.vested_at(u64::MAX), 1_000_000);
     }
 
@@ -1650,7 +1712,6 @@ mod test {
     #[test]
     fn test_linear_near_max_i128_no_overflow() {
         let env = Env::default();
-        // Use i128::MAX / 2 so the multiplication would overflow without the guard.
         let big_amount = i128::MAX / 2;
         let schedule = VestingSchedule {
             id: 1,
@@ -1662,6 +1723,7 @@ mod test {
             start_time: 0,
             duration: u64::MAX,
             cliff_duration: 0,
+            lockup_duration: 0,
             kind: VestingKind::Linear,
             revocable: false,
             revoked: false,
@@ -1672,10 +1734,8 @@ mod test {
             requires_milestones: false,
             milestones: vec![&env],
         };
-        // elapsed = duration / 2 → would overflow without checked_mul
         let half_elapsed = u64::MAX / 2;
         let vested = schedule.vested_at(half_elapsed);
-        // Must be ≤ total_amount and ≥ 0
         assert!(vested >= 0 && vested <= big_amount);
     }
 
@@ -1696,6 +1756,7 @@ mod test {
             start_time: 0,
             duration,
             cliff_duration: cliff,
+            lockup_duration: cliff,
             kind: VestingKind::LinearWithCliff,
             revocable: false,
             revoked: false,
@@ -1706,7 +1767,6 @@ mod test {
             requires_milestones: false,
             milestones: vec![&env],
         };
-        // Midpoint between cliff and end
         let mid = cliff + (duration - cliff) / 2;
         let vested = schedule.vested_at(mid);
         assert!(vested >= 0 && vested <= big_amount);
@@ -1722,10 +1782,11 @@ mod test {
             beneficiary: Address::generate(&env),
             token: Address::generate(&env),
             total_amount: 500,
-            claimed: 500, // already fully claimed
+            claimed: 500,
             start_time: 0,
             duration: 1_000,
             cliff_duration: 0,
+            lockup_duration: 0,
             kind: VestingKind::Linear,
             revocable: false,
             revoked: false,
@@ -1754,6 +1815,7 @@ mod test {
             start_time: 0,
             duration: 1,
             cliff_duration: 0,
+            lockup_duration: 0,
             kind: VestingKind::Linear,
             revocable: false,
             revoked: false,
@@ -1764,9 +1826,7 @@ mod test {
             requires_milestones: false,
             milestones: vec![&env],
         };
-        // Before end: 0 elapsed → 0 vested
         assert_eq!(schedule.vested_at(0), 0);
-        // At or after end: fully vested
         assert_eq!(schedule.vested_at(1), 1_000);
         assert_eq!(schedule.vested_at(u64::MAX), 1_000);
     }
@@ -1812,6 +1872,7 @@ mod test {
             &0,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &false,
         );
@@ -1855,6 +1916,7 @@ mod test {
             &beneficiary,
             &token_addr,
             &10_000,
+            &0,
             &0,
             &false,
             &milestones,
@@ -1909,6 +1971,7 @@ mod test {
             &token_addr,
             &10_000,
             &0,
+            &0,
             &false,
             &milestones,
         );
@@ -1928,6 +1991,7 @@ mod test {
             &beneficiary,
             &token_addr,
             &10_000,
+            &0,
             &0,
             &false,
             &milestones,
@@ -1951,6 +2015,7 @@ mod test {
             &1000,
             &0,
             &1000,
+            &0,
             &0,
             &VestingKind::Linear,
             &false,
@@ -1979,6 +2044,7 @@ mod test {
             &0,
             &1000,
             &0,
+            &0,
             &VestingKind::Linear,
             &true,
         );
@@ -2003,6 +2069,7 @@ mod test {
             &1000,
             &0,
             &1000,
+            &0,
             &0,
             &VestingKind::Linear,
             &false,
@@ -2200,5 +2267,85 @@ mod test {
             prop_assert!(claimable >= 0);
             prop_assert!(claimable <= total_amount);
         }
+    }
+}
+
+    #[test]
+    fn test_lockup_prevents_early_claim() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        set_time(&env, 0);
+        let id = client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &1000,
+            &0,
+            &1000,
+            &0,
+            &600,
+            &VestingKind::Linear,
+            &false,
+        );
+
+        set_time(&env, 500);
+        assert_eq!(client.claimable(&id), 0);
+
+        set_time(&env, 600);
+        assert_eq!(client.claimable(&id), 600);
+    }
+
+    #[test]
+    fn test_lockup_with_cliff() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+        let token = TokenClient::new(&env, &token_addr);
+
+        set_time(&env, 0);
+        let id = client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &1000,
+            &0,
+            &1000,
+            &200,
+            &400,
+            &VestingKind::LinearWithCliff,
+            &false,
+        );
+
+        set_time(&env, 300);
+        assert_eq!(client.claimable(&id), 0);
+
+        set_time(&env, 400);
+        assert_eq!(client.claimable(&id), 200);
+        client.claim(&id);
+        assert_eq!(token.balance(&beneficiary), 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "Lockup cannot be less than cliff")]
+    fn test_lockup_less_than_cliff_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        set_time(&env, 0);
+        client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &1000,
+            &0,
+            &1000,
+            &500,
+            &300,
+            &VestingKind::Linear,
+            &false,
+        );
     }
 }
