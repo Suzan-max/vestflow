@@ -35,6 +35,7 @@
 //! | `"Cliff cannot exceed duration"`| `create_schedule` with `cliff_duration` > `duration`             |
 //! | `"Lockup cannot be less than cliff"` | `create_schedule` with `lockup_duration` < `cliff_duration`   |
 //! | `"Beneficiary must differ from grantor"` | `create_schedule` with `beneficiary == grantor`                 |
+//! | `"Start time cannot be in the past"` | `create_schedule` or `create_graded_schedule` with `start_time` < current ledger time |
 //! | `"Re-entrant call detected"`    | A state-mutating entry point is called while already executing   |
 //! | `"Upgrade authority already initialized"` | `initialize_upgrade_authority` called more than once |
 //! | `"Upgrade authority not initialized"` | Upgrade announcement/execution attempted before authority setup |
@@ -534,6 +535,7 @@ impl VestFlowContract {
     /// Panics with `"Cliff cannot exceed duration"` if `cliff_duration` > `duration`.
     /// Panics with `"Lockup cannot be less than cliff"` if `lockup_duration` < `cliff_duration`.
     /// Panics with `"Beneficiary must differ from grantor"` if `beneficiary == grantor`.
+    /// Panics with `"Start time cannot be in the past"` if `start_time` < current ledger time.
     pub fn create_schedule(
         env: Env,
         grantor: Address,
@@ -651,6 +653,7 @@ impl VestFlowContract {
     /// # Errors
     ///
     /// Panics with `"Amount must be positive"` if `total_amount` ≤ 0.
+    /// Panics with `"Start time cannot be in the past"` if `start_time` < current ledger time.
     /// Panics with `"Milestones required"` if the milestones list is empty.
     /// Panics with `"Milestones must sum to 10000 bps"` if the bps total ≠ 10 000.
     pub fn create_graded_schedule(
@@ -671,6 +674,7 @@ impl VestFlowContract {
             "Beneficiary must differ from grantor"
         );
         assert!(total_amount > 0, "Amount must be positive");
+        assert!(start_time >= env.ledger().timestamp(), "Start time cannot be in the past");
         assert!(!milestones.is_empty(), "Milestones required");
 
         let total_bps: u64 = milestones.iter().map(|m| m.bps as u64).sum();
