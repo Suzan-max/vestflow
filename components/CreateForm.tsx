@@ -15,6 +15,7 @@ interface FormState {
   startTime: string;
   durationDays: string;
   cliffDays: string;
+  lockupDays: string;
   kind: VestingKind;
   revocable: boolean;
 }
@@ -77,6 +78,20 @@ function validateForm(form: FormState): FormErrors {
     } else if (!isNaN(cliff) && !isNaN(dur) && cliff > dur) {
       errors.cliffDays = "Cliff cannot exceed total duration.";
     }
+  }
+
+  // Lockup: tokens stay non-transferable until this many days after start.
+  // The contract requires lockup >= cliff, so mirror that here.
+  const cliffForLockup = parseInt(form.cliffDays || "0");
+  const lockup = parseInt(form.lockupDays);
+  if (!form.lockupDays && form.lockupDays !== "0") {
+    errors.lockupDays = "Lockup duration is required.";
+  } else if (isNaN(lockup) || lockup < 0) {
+    errors.lockupDays = "Lockup must be 0 or more days.";
+  } else if (!isNaN(cliffForLockup) && lockup < cliffForLockup) {
+    errors.lockupDays = "Lockup must be greater than or equal to the cliff duration.";
+  } else if (!isNaN(dur) && lockup > dur) {
+    errors.lockupDays = "Lockup cannot exceed total duration.";
   }
 
   return errors;
@@ -195,9 +210,12 @@ export default function CreateForm() {
     startTime: "00:00",
     durationDays: "",
     cliffDays: "0",
+    lockupDays: "0",
     kind: "Linear",
     revocable: true,
   });
+  // Lockup mirrors the cliff value until the grantor edits it explicitly.
+  const [lockupEdited, setLockupEdited] = useState(false);
   const [touched, setTouched] = useState<Partial<Record<keyof FormState, boolean>>>({});
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -210,6 +228,15 @@ export default function CreateForm() {
 
   const touch = (k: keyof FormState) =>
     setTouched((t) => ({ ...t, [k]: true }));
+
+  // Update the cliff value, keeping the (un-edited) lockup in lockstep so the
+  // default behaviour matches the old hard-coded `lockup = cliff` mirror.
+  const setCliffDays = (v: string) =>
+    setForm((f) => ({
+      ...f,
+      cliffDays: v,
+      lockupDays: lockupEdited ? f.lockupDays : v,
+    }));
 
   const errors = validateForm(form);
 
@@ -250,6 +277,7 @@ export default function CreateForm() {
         parseInt(form.cliffDays),
         form.kind,
         form.revocable,
+        parseInt(form.lockupDays),
       );
       setTxHash(hash);
       setStatus("done");
@@ -267,6 +295,7 @@ export default function CreateForm() {
     setErrMsg("");
     setSubmitAttempted(false);
     setTouched({});
+    setLockupEdited(false);
     setForm({
       beneficiary: "",
       tokenAddress: NATIVE_TOKEN,
@@ -275,6 +304,7 @@ export default function CreateForm() {
       startTime: "00:00",
       durationDays: "",
       cliffDays: "0",
+      lockupDays: "0",
       kind: "Linear",
       revocable: true,
     });
@@ -332,6 +362,8 @@ export default function CreateForm() {
   if (step === "confirm") {
     const cliffDisplay =
       showCliffField ? `${form.cliffDays || "0"} days` : "None";
+    const lockupDisplay =
+      parseInt(form.lockupDays || "0") > 0 ? `${form.lockupDays} days` : "None";
     const kindDisplay =
       KIND_OPTIONS.find((o) => o.value === form.kind)?.label ?? form.kind;
 
@@ -361,6 +393,9 @@ export default function CreateForm() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <SummaryItem label="Cliff Duration" value={cliffDisplay} />
+            <SummaryItem label="Lockup Duration" value={lockupDisplay} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <SummaryItem label="Revocable" value={form.revocable ? "Yes — you can recover unvested tokens" : "No — tokens are permanently locked"} />
           </div>
           <div className="pt-1 border-t border-white/5">
@@ -591,8 +626,8 @@ export default function CreateForm() {
                   checked={form.kind === value}
                   onChange={() => {
                     set("kind", value);
-                    // Reset cliff when switching to Linear
-                    if (value === "Linear") set("cliffDays", "0");
+                    // Reset cliff when switching to Linear (lockup follows unless edited)
+                    if (value === "Linear") setCliffDays("0");
                   }}
                   className="accent-violet-500"
                   aria-label={label}
@@ -624,13 +659,37 @@ export default function CreateForm() {
             min="0"
             step="1"
             value={form.cliffDays}
-            onChange={(e) => set("cliffDays", e.target.value)}
+            onChange={(e) => setCliffDays(e.target.value)}
             onBlur={() => touch("cliffDays")}
             aria-invalid={!!visibleErrors.cliffDays}
             className={`input ${visibleErrors.cliffDays ? "border-red-500/60 focus:border-red-500" : ""}`}
           />
         </Field>
       )}
+
+      {/* ── Lockup Duration ─────────────────────────────────────────────────── */}
+      <Field
+        label="Lockup Duration (days)"
+        htmlFor="lockupDays"
+        error={visibleErrors.lockupDays}
+        hint="Tokens vest on schedule but stay non-transferable until the lockup ends. Must be ≥ the cliff; defaults to the cliff value."
+      >
+        <input
+          id="lockupDays"
+          type="number"
+          placeholder="0"
+          min="0"
+          step="1"
+          value={form.lockupDays}
+          onChange={(e) => {
+            setLockupEdited(true);
+            set("lockupDays", e.target.value);
+          }}
+          onBlur={() => touch("lockupDays")}
+          aria-invalid={!!visibleErrors.lockupDays}
+          className={`input ${visibleErrors.lockupDays ? "border-red-500/60 focus:border-red-500" : ""}`}
+        />
+      </Field>
 
       {/* ── Revocable Toggle ────────────────────────────────────────────────── */}
       <div className="flex items-start gap-3 p-3 rounded-xl border border-white/8 bg-white/2">
