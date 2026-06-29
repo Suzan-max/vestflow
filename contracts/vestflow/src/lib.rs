@@ -477,6 +477,27 @@ impl VestFlowContract {
             .update_current_contract_wasm(pending.wasm_hash);
     }
 
+    /// Transfer upgrade authority to a new address.
+    ///
+    /// Both the current and new authority must sign. Emits an `"upgr_xfr"` event.
+    pub fn transfer_upgrade_authority(
+        env: Env,
+        current_authority: Address,
+        new_authority: Address,
+    ) {
+        let configured = Self::read_upgrade_authority(&env);
+        assert!(current_authority == configured, "Unauthorized upgrade authority");
+        current_authority.require_auth();
+        new_authority.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeAuthority, &new_authority);
+        env.events().publish(
+            (symbol_short!("upgr_xfr"), current_authority.clone()),
+            (current_authority, new_authority, env.ledger().timestamp()),
+        );
+    }
+
     /// Create a new vesting schedule and lock the tokens into the contract.
     ///
     /// The grantor must approve the contract to transfer `total_amount` of
@@ -639,7 +660,7 @@ impl VestFlowContract {
         lockup_duration: u64,
         revocable: bool,
         milestones: Vec<GradedMilestone>,
-    ) -> u64 {
+    ) -> Result<u64, VestFlowError> {
         grantor.require_auth();
 
         assert!(
@@ -736,7 +757,7 @@ impl VestFlowContract {
             ),
         );
 
-        id
+        Ok(id)
     }
 
     /// Pause an active vesting schedule (grantor only).
@@ -867,6 +888,9 @@ impl VestFlowContract {
 
         schedule.grantor.require_auth();
         assert!(!schedule.requires_milestones, "Milestones already enabled");
+
+        let total: u32 = milestones.iter().sum();
+        assert!(total == 100, "Unlock percentages must sum to 100");
 
         schedule.requires_milestones = true;
 
@@ -1155,6 +1179,10 @@ impl VestFlowContract {
         if schedule.revoked {
             return Err(VestFlowError::ScheduleRevoked);
         }
+        assert!(
+            new_beneficiary != schedule.grantor,
+            "New beneficiary must differ from grantor"
+        );
 
         let old_beneficiary = schedule.beneficiary.clone();
         schedule.beneficiary = new_beneficiary.clone();
